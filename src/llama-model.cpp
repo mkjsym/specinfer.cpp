@@ -2225,6 +2225,10 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     default: type = LLM_TYPE_UNKNOWN;
                 }
             } break;
+        case LLM_ARCH_EAGLE:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+            } break;
         default: throw std::runtime_error("unsupported model architecture");
     }
 
@@ -2359,6 +2363,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     };
 
     const auto TENSOR_DUPLICATED   = llama_model_loader::TENSOR_DUPLICATED;
+    const auto TENSOR_DUPLICATED_EAGLE = llama_model_loader::TENSOR_DUPLICATED_EAGLE;
     const auto TENSOR_NOT_REQUIRED = llama_model_loader::TENSOR_NOT_REQUIRED;
     const auto TENSOR_SKIP         = llama_model_loader::TENSOR_SKIP;
 
@@ -2440,7 +2445,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             }
 
             // sanity checks
-            if (info.layer == LLM_TENSOR_LAYER_INPUT || info.layer == LLM_TENSOR_LAYER_OUTPUT) {
+            if (info.layer == LLM_TENSOR_LAYER_INPUT || info.layer == LLM_TENSOR_LAYER_OUTPUT || info.layer == LLM_TENSOR_LAYER_INPUT_EAGLE) {
                 if (tn.bid != -1) {
                     GGML_ABORT("input/output layer tensor %s used with a layer number", tn.str().c_str());
                 }
@@ -2461,6 +2466,9 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     break;
                 case LLM_TENSOR_LAYER_REPEATING:
                     buft_list = pimpl->dev_layer.at(tn.bid).buft_list;
+                    break;
+                case LLM_TENSOR_LAYER_INPUT_EAGLE:
+                    buft_list = pimpl->dev_output.buft_list;  // EAGLE input layer is the same as output layer
                     break;
                 default:
                     GGML_ABORT("invalid layer %d for tensor %s", info.layer, tn.str().c_str());
@@ -6414,6 +6422,59 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
                     }
                 } break;
+                case LLM_ARCH_EAGLE:
+                {
+                    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
+
+                    embd_fc   = create_tensor(tn(LLM_TENSOR_EMBD_FC, "weight"), {n_embd * 2, n_embd}, 0);
+                    embd_fc_b = create_tensor(tn(LLM_TENSOR_EMBD_FC, "bias"),   {n_embd}, 0);
+
+                    // ================================================================================================
+                    // ORIGINAL CODE (output tensor creation)
+                    // ================================================================================================
+                    /*
+                    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+
+                    // if output is NULL, init from the input tok embed
+                    if (output == NULL) {
+                        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED_EAGLE);
+                        ml.n_created--;
+                    }
+                    */
+
+                    // ================================================================================================
+                    // CURRENT CODE (output tensor sharing support)
+                    // ================================================================================================
+                    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+
+                    // if output is NULL, defer creation for potential sharing with target model
+                    if (output == NULL) {
+                        // CRITICAL: Keep output as NULL for true pointer sharing at runtime
+                        // Do NOT create fallback tensor - let runtime handle target model sharing
+                        LLAMA_LOG_DEBUG("%s: EAGLE draft model has no output tensor - will share with target at runtime\n", __func__);
+                        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED_EAGLE);
+                        ml.n_created--;
+                        // Note: model.output remains NULL, speculative-eagle.cpp will detect this
+                        // and assign target model's output tensor directly
+                    }
+
+                    for (int i = 0; i < n_layer; ++i) {
+                        auto & layer = layers[i];
+                        
+                        layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight", i), {n_embd, n_embd_head_k * n_head}, 0);
+                        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight", i), {n_embd, n_embd_k_gqa}, 0);
+                        layer.wv = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight", i), {n_embd, n_embd_v_gqa}, 0);
+                        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, 0);
+                        
+                        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
+
+                        layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight"), {n_rot/2}, TENSOR_NOT_REQUIRED | (i != 0 ? TENSOR_DUPLICATED : 0));
+
+                        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
+                        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
+                        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+                    }
+                } break;
             default:
                 throw std::runtime_error("unknown architecture");
         }
@@ -7426,6 +7487,10 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             {
                 llm = std::make_unique<llm_build_pangu_embedded>(*this, params);
             }break;
+        case LLM_ARCH_EAGLE:
+            {
+                llm = std::make_unique<llm_build_eagle>(*this, params);
+            } break;
         default:
             GGML_ABORT("fatal error");
     }
@@ -7594,6 +7659,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_ARCEE:
         case LLM_ARCH_ERNIE4_5:
         case LLM_ARCH_ERNIE4_5_MOE:
+        case LLM_ARCH_EAGLE:
             return LLAMA_ROPE_TYPE_NORM;
 
         // the pairs of head values are offset by n_rot/2

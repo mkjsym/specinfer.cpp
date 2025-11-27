@@ -426,6 +426,8 @@ struct llama_model {
     struct ggml_tensor * pos_embd   = nullptr;
     struct ggml_tensor * tok_norm   = nullptr;
     struct ggml_tensor * tok_norm_b = nullptr;
+    struct ggml_tensor * embd_fc    = nullptr;  // for eagle
+    struct ggml_tensor * embd_fc_b  = nullptr;  // for eagle
 
     struct ggml_tensor * output_norm     = nullptr;
     struct ggml_tensor * output_norm_b   = nullptr;

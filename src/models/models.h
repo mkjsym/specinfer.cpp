@@ -369,6 +369,10 @@ struct llm_build_pangu_embedded : public llm_graph_context {
     llm_build_pangu_embedded(const llama_model & model, const llm_graph_params & params);
 };
 
+struct llm_build_eagle : public llm_graph_context {
+    llm_build_eagle(const llama_model & model, const llm_graph_params & params);
+};
+
 struct llm_build_phi2 : public llm_graph_context {
     llm_build_phi2(const llama_model & model, const llm_graph_params & params);
 };
