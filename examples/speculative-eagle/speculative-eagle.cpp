@@ -1331,8 +1331,8 @@ static bool cb_get_hidden(struct ggml_tensor * tensor, bool ask, void * user_dat
 
     int64_t end_time = ggml_time_us();
     int64_t latency = end_time - start_time;
-    LOG("[[Latency for tensor]] '%s' (%s): %lld us ==> (%d)\n", tensor->name, ggml_op_name(tensor->op), latency, (int)ggml_backend_buffer_is_host(tensor->buffer));
-    LOG("[%d, %d, %d, %d]\n", tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+    LOG_DBG("[[Latency for tensor]] '%s' (%s): %lld us ==> (%d)\n", tensor->name, ggml_op_name(tensor->op), latency, (int)ggml_backend_buffer_is_host(tensor->buffer));
+    LOG_DBG("[%d, %d, %d, %d]\n", tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
     auto * cb_data = (struct callback_data *) user_data;
     auto n_bytes = ggml_nbytes(tensor);
     cb_data->data.resize(n_bytes / sizeof(float)); //float 타입으로 변경 -ym-
