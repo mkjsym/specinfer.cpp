@@ -37,6 +37,10 @@ class TensorNameMap:
             "embed_tokens",                              # qwen3-embedding
         ),
 
+        MODEL_TENSOR.FC: (
+            "fc", #eagle
+        ),
+
         # Token type embeddings
         MODEL_TENSOR.TOKEN_TYPES: (
             "embeddings.token_type_embeddings",  # bert nomic-bert

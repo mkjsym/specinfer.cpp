@@ -435,7 +435,7 @@
 //                     // stochastic verification
 //                     common_sampler_sample(smpl, ctx_tgt, drafts[s_keep].i_batch_tgt[i_dft], true);
 
-//                     auto & dist_tgt = *common_sampler_get_candidates(smpl);
+//                     auto & dist_tgt = *common_sampler_get_candidates(smpl, true);
 
 //                     float p_tgt = 0.0f;
 //                     float p_dft = 0.0f;
@@ -819,7 +819,7 @@
 //                 LOG_DBG("common_sampler_sample took %f seconds\n", (common_sampler_sample_end - common_sampler_sample_start) / 1e6f);
 
 //                 const auto common_sampler_get_candidates_start = ggml_time_us(); //common_sampler_get_candidates 시작 시간 기록 -ym-
-//                 const auto * cur_p = common_sampler_get_candidates(drafts[s].smpl);
+//                 const auto * cur_p = common_sampler_get_candidates(drafts[s].smpl, true);
 //                 const auto common_sampler_get_candidates_end = ggml_time_us(); //common_sampler_get_candidates 시작 시간 기록 -ym-
 //                 LOG_DBG("common_sampler_get_candidates took %f seconds\n", (common_sampler_get_candidates_end - common_sampler_get_candidates_start) / 1e6f);
 
@@ -1518,15 +1518,15 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    if (
-        llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
-        llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
-        llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft) ||
-        llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft)
-    ) {
-        LOG_ERR("%s: draft model special tokens must match target model to use speculation\n", __func__);
-        return 1;
-    }
+    // if (
+    //     llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
+    //     llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
+    //     llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft) ||
+    //     llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft)
+    // ) {
+    //     LOG_ERR("%s: draft model special tokens must match target model to use speculation\n", __func__);
+    //     return 1;
+    // }
 
     {
         const int n_vocab_tgt = llama_vocab_n_tokens(vocab_tgt);
@@ -2420,17 +2420,17 @@ int main(int argc, char ** argv) {
         LOG_INF("  Avg length: %.3f\n", avg_len);
     }
 
-    std::ofstream outFile("al_d25.txt");
+    // std::ofstream outFile("al_d25.txt");
 
-    if (outFile.is_open()) {
-        for (const auto& number : acceptance_lengths) {
-            outFile << number << std::endl; // 각 숫자를 한 줄에 하나씩 저장
-        }
-        outFile.close();
-        std::cout << "numbers.txt 파일 저장 완료!" << std::endl;
-    } else {
-        std::cerr << "파일을 열 수 없습니다." << std::endl;
-    }
+    // if (outFile.is_open()) {
+    //     for (const auto& number : acceptance_lengths) {
+    //         outFile << number << std::endl; // 각 숫자를 한 줄에 하나씩 저장
+    //     }
+    //     outFile.close();
+    //     std::cout << "al_d25.txt 파일 저장 완료!" << std::endl;
+    // } else {
+    //     std::cerr << "파일을 열 수 없습니다." << std::endl;
+    // }
 
     if (!decoding_latencies.empty() && !verification_latencies.empty()) {
     const double avg_decoding_latency = std::accumulate(decoding_latencies.begin(), decoding_latencies.end(), 0.0) / decoding_latencies.size();
@@ -2440,17 +2440,17 @@ int main(int argc, char ** argv) {
     LOG_INF("avg T_d: %.3f ms\n", std::accumulate(T_d.begin(), T_d.end(), 0.0) / T_d.size());
     }
 
-    std::ofstream outFile2("cs_d25.txt");
+    // std::ofstream outFile2("cs_d25.txt");
 
-    if (outFile2.is_open()) {
-        for (const auto& number : confidence_scores) {
-            outFile2 << number << std::endl; // 각 숫자를 한 줄에 하나씩 저장
-        }
-        outFile2.close();
-        std::cout << "numbers.txt 파일 저장 완료!" << std::endl;
-    } else {
-        std::cerr << "파일을 열 수 없습니다." << std::endl;
-    }
+    // if (outFile2.is_open()) {
+    //     for (const auto& number : confidence_scores) {
+    //         outFile2 << number << std::endl; // 각 숫자를 한 줄에 하나씩 저장
+    //     }
+    //     outFile2.close();
+    //     std::cout << "cs_d25.txt 파일 저장 완료!" << std::endl;
+    // } else {
+    //     std::cerr << "파일을 열 수 없습니다." << std::endl;
+    // }
 
     // Accepted Token Counts Matrix 출력 (디버깅용)
     for (int i = 0; i < 15; i++) {
