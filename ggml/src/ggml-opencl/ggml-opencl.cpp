@@ -522,6 +522,12 @@ struct ggml_backend_opencl_context {
     std::vector<ProfilingInfo> profiling_info;
 
     void write_profiling_info() {
+        // static bool already_freed = false;
+        // if (already_freed) {
+        //     return;
+        // }
+        // already_freed = true;
+
         FILE * fperf = fopen("cl_profiling.csv", "w");
         if (!fperf) {
             GGML_LOG_ERROR("Failed to open cl_profiling.csv\n");
@@ -7039,14 +7045,21 @@ static void ggml_cl_mul_mat(ggml_backend_t backend, const ggml_tensor * src0, co
             int width_B = K/4;
             int padded_height_B = (N + padding)/4;
 
+            int height_B2 = (N + 3)/4;
+            int width_B2 = K;
+
+            int padded_height_B2 = (N + padding + 3)/4;
+
             kernel = backend_ctx->kernel_transpose_32_16;
             CL_CHECK(clSetKernelArg(kernel, 0, sizeof(cl_mem), &B_d_input_image));
             CL_CHECK(clSetKernelArg(kernel, 1, sizeof(cl_mem), &B_image1d));
-            CL_CHECK(clSetKernelArg(kernel, 2, sizeof(int),    &height_B));
-            CL_CHECK(clSetKernelArg(kernel, 3, sizeof(int),    &width_B));
+            CL_CHECK(clSetKernelArg(kernel, 2, sizeof(int),    &height_B2));
+            CL_CHECK(clSetKernelArg(kernel, 3, sizeof(int),    &width_B2));
             CL_CHECK(clSetKernelArg(kernel, 4, sizeof(int),    &padded_height_B));
 
-            size_t local_size_t[2] = { 1, 16 };
+            // size_t local_size_t[2] = { 1, 16 };
+            size_t local_size_t[2] = { 16, 1 };
+
             //WGS tuning
             if (ne0 == 4096 && ne1 == 128 && ne10 == 4096) {
                 local_size_t[0]=4;
@@ -7062,9 +7075,14 @@ static void ggml_cl_mul_mat(ggml_backend_t backend, const ggml_tensor * src0, co
                 local_size_t[1]=8;
             }
 
+            // size_t global_size_t[2] = {
+            //     static_cast<size_t>(width_B),
+            //     static_cast<size_t>(padded_height_B)
+            // };
+
             size_t global_size_t[2] = {
-                static_cast<size_t>(width_B),
-                static_cast<size_t>(padded_height_B)
+                static_cast<size_t>(width_B2),
+                static_cast<size_t>(padded_height_B2)
             };
 
             backend_ctx->enqueue_ndrange_kernel(kernel, 2, global_size_t, local_size_t, dst);
@@ -7159,6 +7177,38 @@ static void ggml_cl_mul_mat(ggml_backend_t backend, const ggml_tensor * src0, co
         local_work_size[0]  = (size_t)(1); //4x32 for FP32
         local_work_size[1]  = (size_t)(128);
         local_work_size[2]  = (size_t)(1);
+
+        size_t TILE_N = 8;
+        size_t TILE_M = 4;
+        size_t TILE_K = 4;
+        size_t WI_N = 1;
+        size_t WI_M = 128;
+        size_t WI_K = 1;
+        if(N <= 8){
+            WI_M = 4;
+            WI_K = 32;
+        }
+        if(N <= 128){
+            WI_M = 32;
+            WI_K = 4;
+        }
+        else if(N <= 512){
+            WI_M = 64;
+            WI_K = 2;
+        }
+
+        size_t DIM_N = 0;
+        size_t DIM_M = 1;
+        size_t DIM_K = 2;
+        size_t WG_N = (N+TILE_N-1) / TILE_N / WI_N;
+        size_t WG_M = M / TILE_M / WI_M;
+
+        global_work_size[0] = WG_N * WI_N;
+        global_work_size[1] = WG_M * WI_M;
+        global_work_size[2] = WI_K;
+        local_work_size[0]  = WI_N;
+        local_work_size[1]  = WI_M;
+        local_work_size[2]  = WI_K;
 
         //WGS tuning
         if (ne0 == 4096 && ne1 == 128 && ne10 == 4096) {
