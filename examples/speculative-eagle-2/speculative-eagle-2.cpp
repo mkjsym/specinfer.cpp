@@ -21,12 +21,8 @@
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
 
-//Dynamic Generation 및 Reranking 관련 파라미터 설정
-#define n_depth 5
-#define expand_k 10
-
-#define rerank true
-#define rerank_k 59
+//Dynamic Generation 및 Reranking 관련 파라미터 설정 (CLI 인자로 변경됨)
+// 기본값: n_depth=5, draft_top_k=10, expand_k=10, rerank=true, rerank_k=59
 
 
 struct callback_data {
@@ -106,12 +102,52 @@ struct seq_draft { //각 드래프트 시퀀스(트리의 브랜치)의 상태�
 };
 
 int main(int argc, char ** argv) {
+    // ---- Draft Tree Expansion CLI 인자 파싱 시작 ----
+    int n_depth = 5;
+    int draft_top_k = 10;
+    int expand_k = 10;
+    bool rerank = true;
+    int rerank_k = 59;
+
+    std::vector<char *> new_argv;
+    new_argv.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--n-depth" && i + 1 < argc) {
+            n_depth = std::stoi(argv[++i]);
+        } else if (arg == "--top-k" && i + 1 < argc) {
+            draft_top_k = std::stoi(argv[++i]);
+            expand_k = draft_top_k; // expand-k도 top-k와 같은 값을 사용하도록 수정
+        } else if (arg == "--expand-k" && i + 1 < argc) {
+            expand_k = std::stoi(argv[++i]);
+        } else if (arg == "--rerank-k" && i + 1 < argc) {
+            rerank_k = std::stoi(argv[++i]);
+        } else if (arg == "--no-rerank") {
+            rerank = false;
+        } else if (arg == "--rerank") {
+            rerank = true;
+        } else if (arg == "--help" || arg == "-h") {
+            printf("\nDraft Tree Expansion Options:\n");
+            printf("  --n-depth N        Draft tree depth (default: 5)\n");
+            printf("  --top-k N          Draft tree Top-K (default: 10)\n");
+            printf("  --expand-k N       Draft tree Expand-K (default: 10)\n");
+            printf("  --rerank-k N       Token-level Reranking K (default: 59)\n");
+            printf("  --no-rerank        Disable token-level reranking\n\n");
+            new_argv.push_back(argv[i]); // pass to base parser
+        } else {
+            new_argv.push_back(argv[i]);
+        }
+    }
+    int new_argc = new_argv.size();
+    char ** new_argv_ptr = new_argv.data();
+    // ---- CLI 인자 파싱 끝 ----
+
     common_params params;
 
     // needed to get candidate probs even for temp <= 0.0
     params.sampling.n_probs = 128;
 
-    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SPECULATIVE)) {
+    if (!common_params_parse(new_argc, new_argv_ptr, params, LLAMA_EXAMPLE_SPECULATIVE)) {
         return 1;
     }
 
@@ -693,24 +729,26 @@ int main(int argc, char ** argv) {
             llama_memory_seq_rm(mem_dft, 0, recompute_point, -1);
 
             //recompute logic 추가 -ym-
-            if (i_dft > 0) {
-                std::vector temp4 = std::vector<float>(backup_data.begin(), backup_data.end() - 4096);
-
-                common_batch_clear(batch_dft);
-                for (size_t i = 0; i < recompute.size() - 1; i++) {
-                    common_batch_add  (batch_dft, recompute[i], recompute_point + i, { 0 }, false);
-                }
-                 llama_decode_eagle(ctx_dft, batch_dft, temp4.data());
-            }
-
             common_batch_clear(batch_dft);
-            common_batch_add(batch_dft, token_id, n_past_dft, {0}, true);
+            if (i_dft > 0) {
+                for (size_t i = 0; i < recompute.size() - 1; i++) {
+                    common_batch_add(batch_dft, recompute[i], recompute_point + i, { 0 }, false);
+                }
+                common_batch_add(batch_dft, token_id, n_past_dft, { 0 }, true);
 
-            LOG_DBG("n_past_tgt: %d, n_past_dft: %d\n", n_past_tgt, n_past_dft);
-            LOG_DBG("recompute point: %d, n_past_dft: %d, recompute.size(): %zu, batch_dft.n_tokens: %d, backup_data.size(): %zu\n", recompute_point, n_past_dft, recompute.size(), batch_dft.n_tokens, backup_data.size()/4096);
+                LOG_DBG("n_past_tgt: %d, n_past_dft: %d\n", n_past_tgt, n_past_dft);
+                LOG_DBG("recompute point: %d, n_past_dft: %d, recompute.size(): %zu, batch_dft.n_tokens: %d, backup_data.size(): %zu\n", recompute_point, n_past_dft, recompute.size(), batch_dft.n_tokens, backup_data.size()/4096);
 
-            // LOG_DBG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
-            llama_decode_eagle(ctx_dft, batch_dft, temp3.data());
+                llama_decode_eagle(ctx_dft, batch_dft, backup_data.data());
+            } else {
+                common_batch_add(batch_dft, token_id, n_past_dft, {0}, true);
+
+                LOG_DBG("n_past_tgt: %d, n_past_dft: %d\n", n_past_tgt, n_past_dft);
+                LOG_DBG("recompute point: %d, n_past_dft: %d, recompute.size(): %zu, batch_dft.n_tokens: %d, backup_data.size(): %zu\n", recompute_point, n_past_dft, recompute.size(), batch_dft.n_tokens, backup_data.size()/4096);
+
+                // LOG_DBG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
+                llama_decode_eagle(ctx_dft, batch_dft, temp3.data());
+            }
             ++n_past_dft;
         }
 
@@ -931,7 +969,7 @@ int main(int argc, char ** argv) {
 
             const auto topk_start = ggml_time_us();
             expandk_indices = TopK(temp_probs, expand_k);
-            topk_indices = TopK(column_scores, expand_k);
+            topk_indices = TopK(column_scores, draft_top_k);
             const auto topk_end = ggml_time_us();
             total_expansion_topk_us += (topk_end - topk_start);
 
@@ -956,8 +994,8 @@ int main(int argc, char ** argv) {
                     break;
 
                 // add the token to the batch for batched decoding with the draft model
-                if (batch_dft.n_tokens >= expand_k)
-                    drafts[s].i_batch_dft = expand_k - 1;
+                if (batch_dft.n_tokens >= draft_top_k)
+                    drafts[s].i_batch_dft = draft_top_k - 1;
                 else
                     drafts[s].i_batch_dft = batch_dft.n_tokens;
                 LOG_DBG("drafts[s].i_batch_dft = %d, batch_dft.n_tokens: %d\n", drafts[s].i_batch_dft, batch_dft.n_tokens);
@@ -996,8 +1034,8 @@ int main(int argc, char ** argv) {
             // }
             // LOG("\n");
 
-            // LOG("222222222topk_indices(Data Size: %d, K: %d):\n", (int)column_scores.size(), expand_k);
-            // for (int i = 0; i < expand_k; i++) {
+            // LOG("222222222topk_indices(Data Size: %d, K: %d):\n", (int)column_scores.size(), draft_top_k);
+            // for (int i = 0; i < draft_top_k; i++) {
             //     LOG("%ld ", topk_indices[i]);
             // }
             // LOG("\nTop-K took %lld us\n", (topk_end - topk_start));
