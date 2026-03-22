@@ -729,26 +729,24 @@ int main(int argc, char ** argv) {
             llama_memory_seq_rm(mem_dft, 0, recompute_point, -1);
 
             //recompute logic 추가 -ym-
-            common_batch_clear(batch_dft);
             if (i_dft > 0) {
+                std::vector temp4 = std::vector<float>(backup_data.begin(), backup_data.end() - 4096);
+
+                common_batch_clear(batch_dft);
                 for (size_t i = 0; i < recompute.size() - 1; i++) {
-                    common_batch_add(batch_dft, recompute[i], recompute_point + i, { 0 }, false);
+                    common_batch_add  (batch_dft, recompute[i], recompute_point + i, { 0 }, false);
                 }
-                common_batch_add(batch_dft, token_id, n_past_dft, { 0 }, true);
-
-                LOG_DBG("n_past_tgt: %d, n_past_dft: %d\n", n_past_tgt, n_past_dft);
-                LOG_DBG("recompute point: %d, n_past_dft: %d, recompute.size(): %zu, batch_dft.n_tokens: %d, backup_data.size(): %zu\n", recompute_point, n_past_dft, recompute.size(), batch_dft.n_tokens, backup_data.size()/4096);
-
-                llama_decode_eagle(ctx_dft, batch_dft, backup_data.data());
-            } else {
-                common_batch_add(batch_dft, token_id, n_past_dft, {0}, true);
-
-                LOG_DBG("n_past_tgt: %d, n_past_dft: %d\n", n_past_tgt, n_past_dft);
-                LOG_DBG("recompute point: %d, n_past_dft: %d, recompute.size(): %zu, batch_dft.n_tokens: %d, backup_data.size(): %zu\n", recompute_point, n_past_dft, recompute.size(), batch_dft.n_tokens, backup_data.size()/4096);
-
-                // LOG_DBG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
-                llama_decode_eagle(ctx_dft, batch_dft, temp3.data());
+                 llama_decode_eagle(ctx_dft, batch_dft, temp4.data());
             }
+
+            common_batch_clear(batch_dft);
+            common_batch_add(batch_dft, token_id, n_past_dft, {0}, true);
+
+            LOG_DBG("n_past_tgt: %d, n_past_dft: %d\n", n_past_tgt, n_past_dft);
+            LOG_DBG("recompute point: %d, n_past_dft: %d, recompute.size(): %zu, batch_dft.n_tokens: %d, backup_data.size(): %zu\n", recompute_point, n_past_dft, recompute.size(), batch_dft.n_tokens, backup_data.size()/4096);
+
+            // LOG_DBG("dft batch: %s\n", LOG_BATCH_TOSTR_PRETTY(ctx_dft, batch_dft).c_str());
+            llama_decode_eagle(ctx_dft, batch_dft, temp3.data());
             ++n_past_dft;
         }
 
