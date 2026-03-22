@@ -470,6 +470,8 @@ struct ggml_backend_opencl_context {
     std::map<std::pair<int, int>, cl_kernel> kernels_flash_attn_f32_q1;
     std::map<std::pair<int, int>, cl_kernel> kernels_flash_attn_f32_f16;
     std::map<std::pair<int, int>, cl_kernel> kernels_flash_attn_f32_f16_q1;
+    std::map<std::pair<int, int>, cl_kernel> kernels_flash_attn_f32_q4_0;
+    std::map<std::pair<int, int>, cl_kernel> kernels_flash_attn_f32_q4_0_q1;
     std::map<std::pair<int, int>, int>       kernels_flash_attn_bm;
     std::map<std::pair<int, int>, int>       kernels_flash_attn_bn;
     cl_kernel kernel_get_rows_f32, kernel_get_rows_f16, kernel_get_rows_q4_0;
@@ -1465,10 +1467,14 @@ static void load_cl_kernels(ggml_backend_opencl_context *backend_ctx, ggml_cl_ve
                 const std::string kernel_src_f32_f16 {
                     #include "flash_attn_f32_f16.cl.h"
                 };
+                const std::string kernel_src_f32_q4_0 {
+                    #include "flash_attn_f32_q4_0.cl.h"
+                };
         #else
                 const std::string kernel_src_f16 = read_file("flash_attn_f16.cl");
                 const std::string kernel_src_f32 = read_file("flash_attn_f32.cl");
                 const std::string kernel_src_f32_f16 = read_file("flash_attn_f32_f16.cl");
+                const std::string kernel_src_f32_q4_0 = read_file("flash_attn_f32_q4_0.cl");
         #endif
 
         if (!kernel_src_f16.empty() && !kernel_src_f32.empty() && !kernel_src_f32_f16.empty()) {
@@ -1512,6 +1518,17 @@ static void load_cl_kernels(ggml_backend_opencl_context *backend_ctx, ggml_cl_ve
                 backend_ctx->kernels_flash_attn_f32_f16[{dk, dv}] = k_f32_f16;
                 backend_ctx->kernels_flash_attn_f32_f16_q1[{dk, dv}] = k_f32_f16_q1;
                 CL_CHECK(clReleaseProgram(prog_f32_f16));
+
+                // q4_0 requires QK4_0=32 alignment for both DK and DV
+                if (!kernel_src_f32_q4_0.empty() && (dk % 32 == 0) && (dv % 32 == 0)) {
+                    cl_program prog_f32_q4_0 = build_program_from_source(backend_ctx->context, backend_ctx->device, kernel_src_f32_q4_0.c_str(), OPTS);
+                    cl_kernel k_f32_q4_0, k_f32_q4_0_q1;
+                    CL_CHECK((k_f32_q4_0 = clCreateKernel(prog_f32_q4_0, "flash_attn_f32_q4_0", &err), err));
+                    CL_CHECK((k_f32_q4_0_q1 = clCreateKernel(prog_f32_q4_0, "flash_attn_f32_q4_0_q1", &err), err));
+                    backend_ctx->kernels_flash_attn_f32_q4_0[{dk, dv}] = k_f32_q4_0;
+                    backend_ctx->kernels_flash_attn_f32_q4_0_q1[{dk, dv}] = k_f32_q4_0_q1;
+                    CL_CHECK(clReleaseProgram(prog_f32_q4_0));
+                }
 
                 backend_ctx->kernels_flash_attn_bm[{dk, dv}] = bm;
                 backend_ctx->kernels_flash_attn_bn[{dk, dv}] = bn;
@@ -3114,8 +3131,12 @@ static bool ggml_opencl_supports_op(ggml_backend_dev_t dev, const struct ggml_te
                                         v->type == GGML_TYPE_F16 && op->type == GGML_TYPE_F16;
                 const bool is_f32_f16 = q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_F16 &&
                                         v->type == GGML_TYPE_F16 && op->type == GGML_TYPE_F32;
+                const bool is_f32_q4_0 = q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_Q4_0 &&
+                                         v->type == GGML_TYPE_Q4_0 && op->type == GGML_TYPE_F32 &&
+                                         (dk % 32 == 0) && (dv % 32 == 0) &&
+                                         backend_ctx->kernels_flash_attn_f32_q4_0.count({dk, dv}) > 0;
 
-                return is_f32_f32 || is_f16_f16 || is_f32_f16;
+                return is_f32_f32 || is_f16_f16 || is_f32_f16 || is_f32_q4_0;
             }
         default:
             return false;
@@ -6459,10 +6480,13 @@ static void ggml_cl_flash_attn(ggml_backend_t backend, const ggml_tensor * q, co
 
     const bool is_f16 = q->type == GGML_TYPE_F16;
     const bool is_mixed = q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_F16;
+    const bool is_q4_0 = q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_Q4_0;
     const std::pair<int, int> dk_dv = {d_head_q, d_head_v};
 
     if (n_q == 1) {
-        if (is_mixed) {
+        if (is_q4_0) {
+            kernel = backend_ctx->kernels_flash_attn_f32_q4_0_q1.at(dk_dv);
+        } else if (is_mixed) {
             kernel = backend_ctx->kernels_flash_attn_f32_f16_q1.at(dk_dv);
         } else if (is_f16) {
             kernel = backend_ctx->kernels_flash_attn_f16_q1.at(dk_dv);
@@ -6470,7 +6494,9 @@ static void ggml_cl_flash_attn(ggml_backend_t backend, const ggml_tensor * q, co
             kernel = backend_ctx->kernels_flash_attn_f32_q1.at(dk_dv);
         }
     } else {
-        if (is_mixed) {
+        if (is_q4_0) {
+            kernel = backend_ctx->kernels_flash_attn_f32_q4_0.at(dk_dv);
+        } else if (is_mixed) {
             kernel = backend_ctx->kernels_flash_attn_f32_f16.at(dk_dv);
         } else if (is_f16) {
             kernel = backend_ctx->kernels_flash_attn_f16.at(dk_dv);
@@ -6552,17 +6578,77 @@ static void ggml_cl_flash_attn(ggml_backend_t backend, const ggml_tensor * q, co
     CL_CHECK(clSetKernelArg(kernel, 38, sizeof(cl_mem),   &sinks_buffer));
     CL_CHECK(clSetKernelArg(kernel, 39, sizeof(cl_ulong), &offset_sinks));
 
+    // ===== K texture cache: image1d_buffer_t for K (args 40-44) =====
+    // f32/f16 mixed 커널만 k_img 텍스처 args 사용 (f32/f32, f16/f16, q4_0는 args 0-39만)
+    cl_mem k_img = NULL;
+    if (is_mixed) {
+        cl_int img_err;
+        size_t k_buf_size = 0;
+        clGetMemObjectInfo(extra_k->data_device, CL_MEM_SIZE, sizeof(k_buf_size), &k_buf_size, NULL);
+
+        cl_image_format img_fmt = {CL_RGBA, CL_HALF_FLOAT};
+        cl_image_desc img_desc;
+        memset(&img_desc, 0, sizeof(img_desc));
+        img_desc.image_type = CL_MEM_OBJECT_IMAGE1D_BUFFER;
+        img_desc.image_width = k_buf_size / 8;
+        img_desc.buffer = extra_k->data_device;
+
+        k_img = clCreateImage(backend_ctx->context, CL_MEM_READ_ONLY, &img_fmt, &img_desc, NULL, &img_err);
+
+        cl_int k_offset_t = (cl_int)(offset_k / 8);
+        cl_int k_nb1_t = (cl_int)(k_nb1 / 8);
+        cl_int k_nb2_t = (cl_int)(k_nb2 / 8);
+        cl_int k_nb3_t = (cl_int)(k_nb3 / 8);
+
+        CL_CHECK(clSetKernelArg(kernel, 40, sizeof(cl_mem), &k_img));
+        CL_CHECK(clSetKernelArg(kernel, 41, sizeof(cl_int), &k_offset_t));
+        CL_CHECK(clSetKernelArg(kernel, 42, sizeof(cl_int), &k_nb1_t));
+        CL_CHECK(clSetKernelArg(kernel, 43, sizeof(cl_int), &k_nb2_t));
+        CL_CHECK(clSetKernelArg(kernel, 44, sizeof(cl_int), &k_nb3_t));
+    }
+
     if (n_q == 1) {
-        const size_t wg_size = 64;
-        size_t local_work_size[] = { wg_size, 1 };
-        size_t global_work_size[] = { wg_size, (size_t)(n_head * n_batch) };
+        // Decode: GQA-grouped — co-locate Q heads sharing a KV head in one WG
+        const int gqa_ratio = n_head / n_head_kv;
+        const int heads_per_wg = MIN(gqa_ratio, 4);
+        const int sg_groups = (gqa_ratio + heads_per_wg - 1) / heads_per_wg;
+        const size_t wg_size = 64 * heads_per_wg;
+        size_t local_work_size[]  = { wg_size, 1 };
+        size_t global_work_size[] = { wg_size, (size_t)(n_head_kv * sg_groups * n_batch) };
         backend_ctx->enqueue_ndrange_kernel(kernel, 2, global_work_size, local_work_size, dst);
     } else {
-        const int block_m = backend_ctx->kernels_flash_attn_bm.at(dk_dv);
-        const size_t wg_size = block_m;
-        size_t local_work_size[] = { wg_size, 1 };
-        size_t global_work_size[] = { (size_t)((n_q + block_m - 1) / block_m) * wg_size, (size_t)(n_head * n_batch) };
-        backend_ctx->enqueue_ndrange_kernel(kernel, 2, global_work_size, local_work_size, dst);
+        if (is_q4_0 || is_mixed) {
+            if (is_mixed) {
+                // Prefill (mixed f32/f16): GQA-grouped
+                const int gqa_ratio = n_head / n_head_kv;
+                const int heads_per_wg = MIN(gqa_ratio, 4);
+                const int sg_groups = (gqa_ratio + heads_per_wg - 1) / heads_per_wg;
+                const size_t wg_size = 64 * heads_per_wg;
+                size_t local_work_size[]  = { wg_size, 1 };
+                size_t global_work_size[] = { wg_size, (size_t)(n_head_kv * sg_groups * n_batch * n_q) };
+                backend_ctx->enqueue_ndrange_kernel(kernel, 2, global_work_size, local_work_size, dst);
+            } else {
+                // Prefill (q4_0): 1 subgroup = 1 (batch, head, query_row)
+                const size_t wg_size = 64;
+                size_t local_work_size[]  = { wg_size, 1 };
+                size_t global_work_size[] = { wg_size, (size_t)(n_head * n_batch * n_q) };
+                backend_ctx->enqueue_ndrange_kernel(kernel, 2, global_work_size, local_work_size, dst);
+            }
+        } else {
+            // block_m 기반 타일링: FP16/FP32
+            const int block_m = backend_ctx->kernels_flash_attn_bm.at(dk_dv);
+            const size_t wg_size = block_m;
+            size_t local_work_size[] = { wg_size, 1 };
+            size_t global_work_size[] = {
+                (size_t)((n_q + block_m - 1) / block_m) * wg_size,
+                (size_t)(n_head * n_batch)
+            };
+            backend_ctx->enqueue_ndrange_kernel(kernel, 2, global_work_size, local_work_size, dst);
+        }
+    }
+
+    if (k_img) {
+        clReleaseMemObject(k_img);
     }
 }
 
